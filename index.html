@@ -1,0 +1,509 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>GRB UMAP 3D Explorer</title>
+<script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+<style>
+  :root {
+    --bg: #0f1117;
+    --panel: #1a1d26;
+    --text: #e6e8ef;
+    --muted: #8a93a6;
+    --accent: #4ea3ff;
+    --border: #2a2f3d;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+  #header {
+    padding: 10px 16px; background: var(--panel); border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  #header h1 { margin: 0; font-size: 16px; font-weight: 600; letter-spacing: 0.3px; }
+  #header .sub { color: var(--muted); font-size: 12px; }
+
+  #controls {
+    padding: 10px 16px; background: var(--panel); border-bottom: 1px solid var(--border);
+    display: flex; flex-wrap: wrap; align-items: center; gap: 12px;
+  }
+  #search-container { position: relative; }
+  #search {
+    width: 320px; padding: 8px 10px; font-size: 14px;
+    background: #0b0d13; color: var(--text);
+    border: 1px solid var(--border); border-radius: 6px; outline: none;
+  }
+  #search:focus { border-color: var(--accent); }
+  #suggestions {
+    position: absolute; top: 100%; left: 0; right: 0;
+    background: #0b0d13; border: 1px solid var(--border); border-top: none;
+    max-height: 260px; overflow-y: auto; display: none; z-index: 10;
+    border-radius: 0 0 6px 6px;
+  }
+  .suggestion { padding: 6px 10px; cursor: pointer; font-size: 13px; }
+  .suggestion:hover, .suggestion.active { background: #1e2636; color: var(--accent); }
+  .suggestion .hit { color: var(--accent); font-weight: 600; }
+
+  #selected-list { display: flex; flex-wrap: wrap; gap: 6px; flex: 1; min-width: 0; }
+  .chip {
+    display: inline-flex; align-items: center; gap: 6px;
+    background: #0b0d13; border: 1px solid var(--border);
+    padding: 3px 8px; border-radius: 999px; font-size: 12px;
+  }
+  .chip .dot { width: 8px; height: 8px; border-radius: 50%; background: #ffeb3b; box-shadow: 0 0 0 1px #000; }
+  .chip .x { cursor: pointer; color: #ff6b6b; font-weight: 700; padding: 0 2px; }
+  .chip .x:hover { color: #ff3333; }
+
+  #clear-all {
+    font-size: 12px; background: transparent; border: 1px solid var(--border);
+    color: var(--muted); border-radius: 6px; padding: 4px 10px; cursor: pointer;
+  }
+  #clear-all:hover { color: var(--text); border-color: var(--accent); }
+
+  #plot { width: 100%; height: calc(100vh - 120px); }
+  #status { padding: 20px; color: var(--muted); }
+  #status.error { color: #ff6b6b; white-space: pre-wrap; }
+  .spinner {
+    display: inline-block; width: 14px; height: 14px;
+    border: 2px solid var(--border); border-top-color: var(--accent);
+    border-radius: 50%; animation: spin 0.8s linear infinite; vertical-align: -3px; margin-right: 8px;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+<div id="header">
+  <h1>GRB UMAP 3D Explorer</h1>
+  <span class="sub">colored by log<sub>10</sub>(T<sub>90</sub>)</span>
+</div>
+
+<div id="controls">
+  <div id="search-container">
+    <input id="search" type="text" placeholder="Search a GRB trigger (e.g. GRB170817)…" autocomplete="off" />
+    <div id="suggestions"></div>
+  </div>
+  <div id="selected-list"></div>
+  <button id="clear-all" title="Remove all user-selected GRBs">clear selection</button>
+</div>
+
+<div id="plot"></div>
+<div id="status"><span class="spinner"></span>Loading data…</div>
+
+<script>
+// =====================================================================
+//  Minimal NumPy .npy reader (supports the dtypes we need in this app)
+// =====================================================================
+async function loadNpy(url) {
+  const resp = await fetch(url);
+  if (!resp.ok) throw new Error(`Failed to fetch ${url}: HTTP ${resp.status}`);
+  const buf = await resp.arrayBuffer();
+  const dv = new DataView(buf);
+  if (dv.getUint8(0) !== 0x93) throw new Error('Not an NPY file: ' + url);
+  const magic = String.fromCharCode(dv.getUint8(1), dv.getUint8(2), dv.getUint8(3), dv.getUint8(4), dv.getUint8(5));
+  if (magic !== 'NUMPY') throw new Error('Not an NPY file: ' + url);
+  const major = dv.getUint8(6);
+  let headerLen, headerStart;
+  if (major === 1) { headerLen = dv.getUint16(8, true); headerStart = 10; }
+  else { headerLen = dv.getUint32(8, true); headerStart = 12; }
+  const headerStr = new TextDecoder().decode(new Uint8Array(buf, headerStart, headerLen));
+  const descrMatch = headerStr.match(/'descr'\s*:\s*'([^']+)'/);
+  const shapeMatch = headerStr.match(/'shape'\s*:\s*\(([^)]*)\)/);
+  if (!descrMatch || !shapeMatch) throw new Error('Cannot parse NPY header: ' + headerStr);
+  const descr = descrMatch[1];
+  const shape = shapeMatch[1].split(',').map(s => s.trim()).filter(Boolean).map(Number);
+  const fortranOrder = /'fortran_order'\s*:\s*True/.test(headerStr);
+  const dataStart = headerStart + headerLen;
+
+  // Copy the payload into its own ArrayBuffer so TypedArrays get proper alignment.
+  const payload = buf.slice(dataStart);
+  const total = shape.reduce((a, b) => a * b, 1);
+  const typeCode = descr.replace(/^[<>|=]/, '');  // strip endian/native marker
+  let data;
+
+  if (typeCode === 'f8') data = new Float64Array(payload, 0, total);
+  else if (typeCode === 'f4') data = new Float32Array(payload, 0, total);
+  else if (typeCode === 'i8') data = Array.from(new BigInt64Array(payload, 0, total), v => Number(v));
+  else if (typeCode === 'i4') data = new Int32Array(payload, 0, total);
+  else if (typeCode === 'i2') data = new Int16Array(payload, 0, total);
+  else if (typeCode === 'i1') data = new Int8Array(payload, 0, total);
+  else if (typeCode === 'u8') data = Array.from(new BigUint64Array(payload, 0, total), v => Number(v));
+  else if (typeCode === 'u4') data = new Uint32Array(payload, 0, total);
+  else if (typeCode === 'u2') data = new Uint16Array(payload, 0, total);
+  else if (typeCode === 'u1' || typeCode === 'b1') data = new Uint8Array(payload, 0, total);
+  else if (typeCode.startsWith('U')) {
+    // Fixed-width UTF-32LE unicode strings
+    const w = parseInt(typeCode.slice(1), 10);
+    const u32 = new Uint32Array(payload, 0, total * w);
+    data = new Array(total);
+    for (let i = 0; i < total; i++) {
+      let s = '';
+      for (let j = 0; j < w; j++) {
+        const c = u32[i * w + j];
+        if (c === 0) break;
+        s += String.fromCodePoint(c);
+      }
+      data[i] = s;
+    }
+  }
+  else if (typeCode.startsWith('S')) {
+    const w = parseInt(typeCode.slice(1), 10);
+    const u8 = new Uint8Array(payload, 0, total * w);
+    data = new Array(total);
+    for (let i = 0; i < total; i++) {
+      let s = '';
+      for (let j = 0; j < w; j++) {
+        const c = u8[i * w + j];
+        if (c === 0) break;
+        s += String.fromCharCode(c);
+      }
+      data[i] = s;
+    }
+  }
+  else {
+    throw new Error('Unsupported NPY dtype "' + descr + '" in ' + url);
+  }
+  return { data, shape, fortranOrder, descr };
+}
+
+// =====================================================================
+//  Known GRB overlays (same lists as the Python script)
+// =====================================================================
+const GRB_LIST = [
+  'GRB170817529',                                              // GW-GRB NSNS
+  'GRB200415367', 'GRB180128215', 'GRB231115650',              // MGFs
+  'GRB221009553',                                              // Collapsar (The BOAT)
+  'GRB200826187',                                              // shortest collapsar
+  'GRB230307656', 'GRB211211549',                              // long mergers
+  'GRB230812790',                                              // nearby CCSN
+];
+const GRB_TAGS = [
+  'GRB 170817A', 'GRB 200415A', 'GRB 180128A', 'GRB 231115A',
+  'GRB 221009A', 'GRB 200826A', 'GRB 230307A', 'GRB 211211A', 'GRB 230812A',
+];
+const GRB_BNS  = ['GRB080905499', 'GRB150101641', 'GRB160821937'];
+const GRB_CCSN = [
+  'GRB081007224', 'GRB090618353', 'GRB091127976', 'GRB101219686',
+  'GRB111228657', 'GRB120729456', 'GRB130215063', 'GRB130427324',
+  'GRB130702004', 'GRB140606133', 'GRB171010792', 'GRB180728728',
+  'GRB190114873', 'GRB190829830', 'GRB211023546',
+];
+const GRB_COLOR  = ['cornflowerblue','goldenrod','gold','yellow','magenta','mediumpurple','limegreen','green','red'];
+const GRB_MARKER = ['square','diamond','diamond','diamond','cross','circle','square','square','circle'];
+
+// NPY files live next to index.html in the "train+test" folder of the repo
+const BASE_PATH = 'train+test/';
+const FILES = {
+  epeak:     'EPEAK_minval5_weightedLoss_Mic.npy',
+  fluence:   'FLUENCE_minval5_weightedLoss_Mic.npy',
+  flux64:    'FLUX64_minval5_weightedLoss_Mic.npy',
+  flux1024:  'FLUX1024_minval5_weightedLoss_Mic.npy',
+  t90:       'T90s_minval5_weightedLoss_Mic.npy',
+  name:      'name_list_minval5_weightedLoss_Mic.npy',
+  umap2d:    'UMAP_VARIABLES_minval5_weightedLoss_Mic_2D.npy',
+  umap3d:    'UMAP_VARIABLES_minval5_weightedLoss_Mic_3D.npy',
+};
+
+// =====================================================================
+//  Main
+// =====================================================================
+async function main() {
+  const statusEl = document.getElementById('status');
+  try {
+    const entries = Object.entries(FILES);
+    const loaded = {};
+    for (const [k, f] of entries) {
+      statusEl.innerHTML = '<span class="spinner"></span>Loading ' + f + '…';
+      loaded[k] = await loadNpy(BASE_PATH + f);
+    }
+
+    statusEl.innerHTML = '<span class="spinner"></span>Processing…';
+
+    const names = loaded.name.data;            // Array<string>
+    const N = names.length;
+
+    // ---- Numerical transforms mirroring the Python script ----
+    const epeak = new Float64Array(N);
+    for (let i = 0; i < N; i++) {
+      let v = loaded.epeak.data[i];
+      if (v < 1) v = 1e5;
+      epeak[i] = Math.log10(v);
+    }
+    const fluence  = new Float64Array(N);
+    const flux64   = new Float64Array(N);
+    const flux1024 = new Float64Array(N);
+    for (let i = 0; i < N; i++) {
+      fluence[i]  = Math.log10(loaded.fluence.data[i]);
+      flux64[i]   = Math.log10(loaded.flux64.data[i]);
+      flux1024[i] = Math.log10(loaded.flux1024.data[i]);
+    }
+    const t90 = new Float64Array(N);
+    const LOG10_E = Math.log10(Math.E);          // convert ln(T90) → log10(T90)
+    for (let i = 0; i < N; i++) t90[i] = loaded.t90.data[i] * LOG10_E;
+
+    const logHR = new Float64Array(N);
+    for (let i = 0; i < N; i++) logHR[i] = flux64[i] - flux1024[i];    // log10(10^f64 / 10^f1024)
+
+    // ---- Extract UMAP 3D columns regardless of saved shape ----
+    function columnsFromUmap(raw, k /* expected dimension: 2 or 3 */) {
+      const s = raw.shape;
+      const flat = raw.data;
+      const cols = [];
+      if (s.length === 2 && s[0] === N && s[1] === k) {
+        for (let j = 0; j < k; j++) {
+          const c = new Float64Array(N);
+          for (let i = 0; i < N; i++) c[i] = flat[i * k + j];
+          cols.push(c);
+        }
+      } else if (s.length === 2 && s[0] === k && s[1] === N) {
+        for (let j = 0; j < k; j++) {
+          const c = new Float64Array(N);
+          for (let i = 0; i < N; i++) c[i] = flat[j * N + i];
+          cols.push(c);
+        }
+      } else {
+        throw new Error(`Unexpected UMAP shape ${JSON.stringify(s)} for N=${N}, k=${k}`);
+      }
+      return cols;
+    }
+    const [ux, uy, uz] = columnsFromUmap(loaded.umap3d, 3);
+
+    // Index names → row
+    const nameIndex = new Map();
+    for (let i = 0; i < N; i++) nameIndex.set(names[i], i);
+
+    // =====================================================================
+    //  Plotly traces
+    // =====================================================================
+    const mainTrace = {
+      type: 'scatter3d', mode: 'markers',
+      name: 'All GRBs',
+      x: Array.from(ux), y: Array.from(uy), z: Array.from(uz),
+      text: names,
+      hovertemplate:
+        '<b>%{text}</b><br>' +
+        'UMAP1: %{x:.2f}<br>UMAP2: %{y:.2f}<br>UMAP3: %{z:.2f}' +
+        '<extra></extra>',
+      marker: {
+        size: 4,
+        color: Array.from(t90),
+        colorscale: 'RdYlBu',
+        reversescale: true,
+        colorbar: {
+          title: { text: 'log10(T90 [s])', font: { size: 14, color: '#e6e8ef' } },
+          len: 0.7, thickness: 14,
+          tickfont: { color: '#e6e8ef' }
+        },
+        opacity: 0.9,
+      },
+    };
+
+    // Build one trace per GRB in GRB_LIST so each can keep its own color & symbol
+    const listTraces = [];
+    for (let i = 0; i < GRB_LIST.length; i++) {
+      const idx = nameIndex.get(GRB_LIST[i]);
+      if (idx === undefined) continue;
+      listTraces.push({
+        type: 'scatter3d', mode: 'markers+text',
+        name: GRB_TAGS[i],
+        x: [ux[idx]], y: [uy[idx]], z: [uz[idx]],
+        text: [GRB_TAGS[i]],
+        textposition: 'top center',
+        textfont: { size: 11, color: '#ffffff' },
+        hovertemplate: '<b>' + GRB_TAGS[i] + '</b><br>' + GRB_LIST[i] + '<extra></extra>',
+        marker: {
+          size: 10, color: GRB_COLOR[i], symbol: GRB_MARKER[i],
+          line: { color: '#000', width: 1 },
+        },
+      });
+    }
+
+    function subsetTrace(ids, name, color, symbol, size) {
+      const xs = [], ys = [], zs = [], ts = [];
+      for (const id of ids) {
+        const idx = nameIndex.get(id);
+        if (idx === undefined) continue;
+        xs.push(ux[idx]); ys.push(uy[idx]); zs.push(uz[idx]); ts.push(id);
+      }
+      return {
+        type: 'scatter3d', mode: 'markers',
+        name, x: xs, y: ys, z: zs, text: ts,
+        hovertemplate: '<b>%{text}</b><br>' + name + '<extra></extra>',
+        marker: {
+          size, color, symbol,
+          line: { color: '#000', width: 1 },
+        },
+      };
+    }
+    const bnsTrace  = subsetTrace(GRB_BNS,  'Short / BNS candidates', '#1e90ff', 'diamond', 8);
+    const ccsnTrace = subsetTrace(GRB_CCSN, 'Long / CCSN-associated', '#ff6347', 'circle',  7);
+
+    // Search-highlight trace (user-selected GRBs). Updated dynamically.
+    const searchTrace = {
+      type: 'scatter3d', mode: 'markers+text',
+      name: 'Selected',
+      x: [], y: [], z: [], text: [],
+      textposition: 'top center',
+      textfont: { size: 12, color: '#ffeb3b' },
+      hovertemplate: '<b>%{text}</b><extra>selected</extra>',
+      marker: {
+        size: 14, color: 'rgba(255,235,59,0.15)',
+        symbol: 'circle', line: { color: '#ffeb3b', width: 4 },
+      },
+    };
+
+    const traces = [mainTrace, bnsTrace, ccsnTrace, ...listTraces, searchTrace];
+    const SEARCH_IDX = traces.length - 1;
+
+    const layout = {
+      paper_bgcolor: '#0f1117',
+      plot_bgcolor:  '#0f1117',
+      font: { color: '#e6e8ef' },
+      margin: { l: 0, r: 0, b: 0, t: 0 },
+      scene: {
+        bgcolor: '#0f1117',
+        xaxis: { title: 'UMAP-1', color: '#e6e8ef', gridcolor: '#2a2f3d', zerolinecolor: '#2a2f3d' },
+        yaxis: { title: 'UMAP-2', color: '#e6e8ef', gridcolor: '#2a2f3d', zerolinecolor: '#2a2f3d' },
+        zaxis: { title: 'UMAP-3', color: '#e6e8ef', gridcolor: '#2a2f3d', zerolinecolor: '#2a2f3d' },
+      },
+      legend: { itemsizing: 'constant', bgcolor: 'rgba(26,29,38,0.7)', bordercolor: '#2a2f3d', borderwidth: 1 },
+    };
+
+    await Plotly.newPlot('plot', traces, layout, { responsive: true, displaylogo: false });
+    statusEl.style.display = 'none';
+
+    // =====================================================================
+    //  Search / autocomplete
+    // =====================================================================
+    const selected = new Set();
+    const searchBox  = document.getElementById('search');
+    const suggestEl  = document.getElementById('suggestions');
+    const chipsEl    = document.getElementById('selected-list');
+    let activeIndex  = -1;
+    let currentMatches = [];
+
+    function updateSearchTrace() {
+      const xs = [], ys = [], zs = [], ts = [];
+      selected.forEach(n => {
+        const idx = nameIndex.get(n);
+        if (idx !== undefined) { xs.push(ux[idx]); ys.push(uy[idx]); zs.push(uz[idx]); ts.push(n); }
+      });
+      Plotly.restyle('plot', { x: [xs], y: [ys], z: [zs], text: [ts] }, [SEARCH_IDX]);
+    }
+
+    function renderChips() {
+      chipsEl.innerHTML = '';
+      selected.forEach(n => {
+        const chip = document.createElement('span');
+        chip.className = 'chip';
+        const dot = document.createElement('span'); dot.className = 'dot';
+        const label = document.createElement('span'); label.textContent = n;
+        const x = document.createElement('span'); x.className = 'x'; x.textContent = '×';
+        x.title = 'remove';
+        x.onclick = () => { selected.delete(n); renderChips(); updateSearchTrace(); };
+        chip.append(dot, label, x);
+        chipsEl.appendChild(chip);
+      });
+    }
+
+    function highlightSuggestion(i) {
+      const nodes = suggestEl.querySelectorAll('.suggestion');
+      nodes.forEach(n => n.classList.remove('active'));
+      if (i >= 0 && i < nodes.length) {
+        nodes[i].classList.add('active');
+        nodes[i].scrollIntoView({ block: 'nearest' });
+      }
+      activeIndex = i;
+    }
+
+    function showSuggestions(matches, query) {
+      suggestEl.innerHTML = '';
+      currentMatches = matches;
+      if (matches.length === 0) { suggestEl.style.display = 'none'; return; }
+      const qLower = query.toLowerCase();
+      matches.forEach((n, i) => {
+        const div = document.createElement('div');
+        div.className = 'suggestion';
+        const lower = n.toLowerCase();
+        const hit = lower.indexOf(qLower);
+        if (hit >= 0 && qLower.length > 0) {
+          div.innerHTML = n.slice(0, hit) +
+            '<span class="hit">' + n.slice(hit, hit + qLower.length) + '</span>' +
+            n.slice(hit + qLower.length);
+        } else { div.textContent = n; }
+        div.onmousedown = (e) => { e.preventDefault(); pickMatch(i); };
+        suggestEl.appendChild(div);
+      });
+      suggestEl.style.display = 'block';
+      activeIndex = -1;
+    }
+
+    function pickMatch(i) {
+      const n = currentMatches[i];
+      if (!n) return;
+      selected.add(n);
+      searchBox.value = '';
+      suggestEl.style.display = 'none';
+      renderChips();
+      updateSearchTrace();
+    }
+
+    searchBox.addEventListener('input', () => {
+      const q = searchBox.value.trim();
+      if (!q) { suggestEl.style.display = 'none'; return; }
+      const qLower = q.toLowerCase();
+      const matches = [];
+      // Prefer substring matches; cap the list for snappy rendering.
+      for (let i = 0; i < names.length; i++) {
+        if (names[i].toLowerCase().includes(qLower)) matches.push(names[i]);
+        if (matches.length >= 50) break;
+      }
+      showSuggestions(matches, q);
+    });
+
+    searchBox.addEventListener('keydown', (e) => {
+      const nodes = suggestEl.querySelectorAll('.suggestion');
+      if (e.key === 'ArrowDown') { e.preventDefault(); highlightSuggestion(Math.min(activeIndex + 1, nodes.length - 1)); }
+      else if (e.key === 'ArrowUp')   { e.preventDefault(); highlightSuggestion(Math.max(activeIndex - 1, 0)); }
+      else if (e.key === 'Enter') {
+        e.preventDefault();
+        const i = activeIndex >= 0 ? activeIndex : 0;
+        if (currentMatches[i]) pickMatch(i);
+      } else if (e.key === 'Escape') {
+        suggestEl.style.display = 'none';
+      }
+    });
+
+    document.addEventListener('click', (e) => {
+      if (!document.getElementById('search-container').contains(e.target)) {
+        suggestEl.style.display = 'none';
+      }
+    });
+
+    document.getElementById('clear-all').onclick = () => {
+      selected.clear(); renderChips(); updateSearchTrace();
+    };
+
+    // Clicking a point in the 3D plot also selects it
+    document.getElementById('plot').on('plotly_click', (ev) => {
+      const p = ev.points && ev.points[0];
+      if (!p) return;
+      const n = typeof p.text === 'string' ? p.text : null;
+      if (!n || !nameIndex.has(n)) return;
+      selected.add(n);
+      renderChips();
+      updateSearchTrace();
+    });
+
+  } catch (err) {
+    statusEl.className = 'error';
+    statusEl.textContent = 'Error: ' + err.message +
+      '\n\nMake sure the .npy files are deployed under "' + BASE_PATH +
+      '" alongside index.html, and that GitHub Pages (or your web server) is serving them.';
+    console.error(err);
+  }
+}
+
+main();
+</script>
+</body>
+</html>
