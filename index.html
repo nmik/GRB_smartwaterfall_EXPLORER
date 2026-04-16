@@ -60,6 +60,14 @@
   }
   #clear-all:hover { color: var(--text); border-color: var(--accent); }
 
+  .field { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
+  .field-label { white-space: nowrap; }
+  #color-select {
+    background: #0b0d13; color: var(--text); font-size: 13px;
+    border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; outline: none;
+  }
+  #color-select:focus { border-color: var(--accent); }
+
   #plot { width: 100%; height: calc(100vh - 120px); }
   #status { padding: 20px; color: var(--muted); }
   #status.error { color: #ff6b6b; white-space: pre-wrap; }
@@ -74,10 +82,18 @@
 <body>
 <div id="header">
   <h1>GRB UMAP 3D Explorer</h1>
-  <span class="sub">colored by log<sub>10</sub>(T<sub>90</sub>)</span>
+  <span class="sub" id="header-sub">colored by log<sub>10</sub>(T<sub>90</sub>)</span>
 </div>
 
 <div id="controls">
+  <label class="field">
+    <span class="field-label">Color by</span>
+    <select id="color-select">
+      <option value="t90">log10(T90 [s])</option>
+      <option value="epeak">log10(Epeak [keV])</option>
+      <option value="flux64">log10(Flux64 [erg/cm²/s])</option>
+    </select>
+  </label>
   <div id="search-container">
     <input id="search" type="text" placeholder="Search a GRB trigger (e.g. GRB170817)…" autocomplete="off" />
     <div id="suggestions"></div>
@@ -378,6 +394,26 @@ async function main() {
 
     await Plotly.newPlot('plot', traces, layout, { responsive: true, displaylogo: false });
     statusEl.style.display = 'none';
+
+    // ---- Color-by selector (recolors the main "All GRBs" trace) ----
+    const MAIN_IDX = 0;
+    const colorOptions = {
+      t90:    { data: t90,    label: 'log10(T90 [s])',            header: 'colored by log<sub>10</sub>(T<sub>90</sub>)' },
+      epeak:  { data: epeak,  label: 'log10(Epeak [keV])',        header: 'colored by log<sub>10</sub>(E<sub>peak</sub>)' },
+      flux64: { data: flux64, label: 'log10(Flux64 [erg/cm²/s])', header: 'colored by log<sub>10</sub>(Flux<sub>64</sub>)' },
+    };
+    const headerSub = document.getElementById('header-sub');
+    document.getElementById('color-select').addEventListener('change', (ev) => {
+      const opt = colorOptions[ev.target.value];
+      if (!opt) return;
+      requestAnimationFrame(() => {
+        Plotly.restyle('plot', {
+          'marker.color': [Array.from(opt.data)],
+          'marker.colorbar.title.text': opt.label,
+        }, [MAIN_IDX]);
+        headerSub.innerHTML = opt.header;
+      });
+    });
 
     // =====================================================================
     //  Search / autocomplete
