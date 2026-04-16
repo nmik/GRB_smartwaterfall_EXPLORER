@@ -381,13 +381,23 @@ async function main() {
     let activeIndex  = -1;
     let currentMatches = [];
 
+    // Defer the Plotly.restyle (WebGL) off the input-handler critical path so
+    // the browser can paint the DOM response (closed dropdown, new chip) in the
+    // next frame; the 3D redraw happens one frame later. Keeps INP well under
+    // the "Good" 200ms threshold and coalesces rapid selections into one redraw.
+    let _plotUpdateScheduled = false;
     function updateSearchTrace() {
-      const xs = [], ys = [], zs = [], ts = [];
-      selected.forEach(n => {
-        const idx = nameIndex.get(n);
-        if (idx !== undefined) { xs.push(ux[idx]); ys.push(uy[idx]); zs.push(uz[idx]); ts.push(n); }
+      if (_plotUpdateScheduled) return;
+      _plotUpdateScheduled = true;
+      requestAnimationFrame(() => {
+        _plotUpdateScheduled = false;
+        const xs = [], ys = [], zs = [], ts = [];
+        selected.forEach(n => {
+          const idx = nameIndex.get(n);
+          if (idx !== undefined) { xs.push(ux[idx]); ys.push(uy[idx]); zs.push(uz[idx]); ts.push(n); }
+        });
+        Plotly.restyle('plot', { x: [xs], y: [ys], z: [zs], text: [ts] }, [SEARCH_IDX]);
       });
-      Plotly.restyle('plot', { x: [xs], y: [ys], z: [zs], text: [ts] }, [SEARCH_IDX]);
     }
 
     function renderChips() {
