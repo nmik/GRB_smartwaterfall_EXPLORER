@@ -290,7 +290,9 @@ async function main() {
         reversescale: true,
         colorbar: {
           title: { text: 'log10(T90 [s])', font: { size: 14, color: '#e6e8ef' } },
-          len: 0.7, thickness: 14,
+          len: 0.75, thickness: 14,
+          x: 1.0, xanchor: 'left',
+          y: 0.5, yanchor: 'middle',
           tickfont: { color: '#e6e8ef' }
         },
         opacity: 0.9,
@@ -358,14 +360,20 @@ async function main() {
       paper_bgcolor: '#0f1117',
       plot_bgcolor:  '#0f1117',
       font: { color: '#e6e8ef' },
-      margin: { l: 0, r: 0, b: 0, t: 0 },
+      margin: { l: 0, r: 60, b: 0, t: 40 },
       scene: {
         bgcolor: '#0f1117',
         xaxis: { title: 'UMAP-1', color: '#e6e8ef', gridcolor: '#2a2f3d', zerolinecolor: '#2a2f3d' },
         yaxis: { title: 'UMAP-2', color: '#e6e8ef', gridcolor: '#2a2f3d', zerolinecolor: '#2a2f3d' },
         zaxis: { title: 'UMAP-3', color: '#e6e8ef', gridcolor: '#2a2f3d', zerolinecolor: '#2a2f3d' },
       },
-      legend: { itemsizing: 'constant', bgcolor: 'rgba(26,29,38,0.7)', bordercolor: '#2a2f3d', borderwidth: 1 },
+      legend: {
+        itemsizing: 'constant',
+        bgcolor: 'rgba(26,29,38,0.7)', bordercolor: '#2a2f3d', borderwidth: 1,
+        orientation: 'h',
+        x: 0.5, xanchor: 'center',
+        y: 1.02, yanchor: 'bottom',
+      },
     };
 
     await Plotly.newPlot('plot', traces, layout, { responsive: true, displaylogo: false });
