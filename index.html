@@ -92,6 +92,10 @@
       <option value="t90">log10(T90 [s])</option>
       <option value="epeak">log10(Epeak [keV])</option>
       <option value="flux64">log10(Flux64 [erg/cm²/s])</option>
+      <option value="ms">Massive star probability</option>
+      <option value="bns">Neutron star merger probability</option>
+      <option value="mgf">Magnetar giant flare probability</option>
+      <option value="lm">Long merger probability</option>
     </select>
   </label>
   <div id="search-container">
@@ -181,6 +185,39 @@ async function loadNpy(url) {
   return { data, shape, fortranOrder, descr };
 }
 
+async function loadProbabilityCsv(url) {
+  const resp = await fetch(url);
+  if (!resp.ok) throw new Error(`Failed to fetch ${url}: HTTP ${resp.status}`);
+  const text = await resp.text();
+  const lines = text.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+  if (lines.length < 2) throw new Error(`CSV file ${url} is empty or malformed`);
+
+  const parse = (line) => line.split(',').map(x => x.trim());
+  const header = parse(lines[0]);
+  const idxName = header.indexOf('Name');
+  const idxMS = header.indexOf('MS');
+  const idxBNS = header.indexOf('BNS');
+  const idxMGF = header.indexOf('MGF');
+  const idxLM = header.indexOf('LM');
+  if ([idxName, idxMS, idxBNS, idxMGF, idxLM].some(v => v < 0)) {
+    throw new Error(`CSV ${url} must contain columns: Name,MS,BNS,MGF,LM`);
+  }
+
+  const byName = new Map();
+  for (let i = 1; i < lines.length; i++) {
+    const row = parse(lines[i]);
+    const name = row[idxName];
+    if (!name) continue;
+    byName.set(name, {
+      ms: Number.parseFloat(row[idxMS]),
+      bns: Number.parseFloat(row[idxBNS]),
+      mgf: Number.parseFloat(row[idxMGF]),
+      lm: Number.parseFloat(row[idxLM]),
+    });
+  }
+  return byName;
+}
+
 // =====================================================================
 //  Known GRB overlays (same lists as the Python script)
 // =====================================================================
@@ -231,6 +268,8 @@ async function main() {
       statusEl.innerHTML = '<span class="spinner"></span>Loading ' + f + '…';
       loaded[k] = await loadNpy(BASE_PATH + f);
     }
+    statusEl.innerHTML = '<span class="spinner"></span>Loading grb_prob_data.csv…';
+    const probabilityByName = await loadProbabilityCsv(BASE_PATH + 'grb_prob_data.csv');
 
     statusEl.innerHTML = '<span class="spinner"></span>Processing…';
 
@@ -258,6 +297,17 @@ async function main() {
 
     const logHR = new Float64Array(N);
     for (let i = 0; i < N; i++) logHR[i] = flux64[i] - flux1024[i];    // log10(10^f64 / 10^f1024)
+    const msProb = new Float64Array(N);
+    const bnsProb = new Float64Array(N);
+    const mgfProb = new Float64Array(N);
+    const lmProb = new Float64Array(N);
+    for (let i = 0; i < N; i++) {
+      const p = probabilityByName.get(names[i]);
+      msProb[i] = p ? p.ms : Number.NaN;
+      bnsProb[i] = p ? p.bns : Number.NaN;
+      mgfProb[i] = p ? p.mgf : Number.NaN;
+      lmProb[i] = p ? p.lm : Number.NaN;
+    }
 
     // ---- Extract UMAP 3D columns regardless of saved shape ----
     function columnsFromUmap(raw, k /* expected dimension: 2 or 3 */) {
@@ -401,16 +451,32 @@ async function main() {
       t90:    { data: t90,    label: 'log10(T90 [s])',            header: 'colored by log<sub>10</sub>(T<sub>90</sub>)' },
       epeak:  { data: epeak,  label: 'log10(Epeak [keV])',        header: 'colored by log<sub>10</sub>(E<sub>peak</sub>)' },
       flux64: { data: flux64, label: 'log10(Flux64 [erg/cm²/s])', header: 'colored by log<sub>10</sub>(Flux<sub>64</sub>)' },
+      ms:     { data: msProb,  label: 'Massive star probability',         header: 'colored by Massive star probability', probScale: true },
+      bns:    { data: bnsProb, label: 'Neutron star merger probability',   header: 'colored by Neutron star merger probability', probScale: true },
+      mgf:    { data: mgfProb, label: 'Magnetar giant flare probability',  header: 'colored by Magnetar giant flare probability', probScale: true },
+      lm:     { data: lmProb,  label: 'Long merger probability',           header: 'colored by Long merger probability', probScale: true },
     };
     const headerSub = document.getElementById('header-sub');
     document.getElementById('color-select').addEventListener('change', (ev) => {
       const opt = colorOptions[ev.target.value];
       if (!opt) return;
       requestAnimationFrame(() => {
-        Plotly.restyle('plot', {
+        const update = {
           'marker.color': [Array.from(opt.data)],
           'marker.colorbar.title.text': opt.label,
-        }, [MAIN_IDX]);
+        };
+        if (opt.probScale) {
+          update['marker.colorscale'] = 'Viridis';
+          update['marker.reversescale'] = false;
+          update['marker.cmin'] = 0;
+          update['marker.cmax'] = 1;
+        } else {
+          update['marker.colorscale'] = 'RdYlBu';
+          update['marker.reversescale'] = true;
+          update['marker.cmin'] = null;
+          update['marker.cmax'] = null;
+        }
+        Plotly.restyle('plot', update, [MAIN_IDX]);
         headerSub.innerHTML = opt.header;
       });
     });
