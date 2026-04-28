@@ -96,6 +96,7 @@
       <option value="bns">Neutron star merger probability</option>
       <option value="mgf">Magnetar giant flare probability</option>
       <option value="lm">Long merger probability</option>
+      <option value="reliability">3D topology reliability</option>
     </select>
   </label>
   <div id="search-container">
@@ -218,6 +219,35 @@ async function loadProbabilityCsv(url) {
   return byName;
 }
 
+async function loadReliabilityCsv(url) {
+  const resp = await fetch(url);
+  if (!resp.ok) throw new Error(`Failed to fetch ${url}: HTTP ${resp.status}`);
+  const text = await resp.text();
+  const lines = text.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+  if (lines.length < 1) throw new Error(`CSV file ${url} is empty or malformed`);
+
+  const parse = (line) => line.split(',').map(x => x.trim());
+  const firstRow = parse(lines[0]);
+  const hasHeader = firstRow.some(x => /^(grb_)?name$/i.test(x)) ||
+    firstRow.some(x => /^(reliability([ _-]?score)?|score)$/i.test(x));
+  const header = hasHeader ? firstRow : ['GRB_name', 'reliability_score'];
+  const idxName = header.findIndex(x => /^(grb_)?name$/i.test(x));
+  const idxScore = header.findIndex(x => /^(reliability([ _-]?score)?|score)$/i.test(x));
+  if (idxName < 0 || idxScore < 0) {
+    throw new Error(`CSV ${url} must contain GRB_name and reliability score columns`);
+  }
+
+  const byName = new Map();
+  const start = hasHeader ? 1 : 0;
+  for (let i = start; i < lines.length; i++) {
+    const row = parse(lines[i]);
+    const name = row[idxName];
+    if (!name) continue;
+    byName.set(name, Number.parseFloat(row[idxScore]));
+  }
+  return byName;
+}
+
 // =====================================================================
 //  Known GRB overlays (same lists as the Python script)
 // =====================================================================
@@ -270,6 +300,8 @@ async function main() {
     }
     statusEl.innerHTML = '<span class="spinner"></span>Loading grb_prob_data.csv…';
     const probabilityByName = await loadProbabilityCsv(BASE_PATH + 'grb_prob_data.csv');
+    statusEl.innerHTML = '<span class="spinner"></span>Loading grb_reliability_data.csv…';
+    const reliabilityByName = await loadReliabilityCsv(BASE_PATH + 'grb_reliability_data.csv');
 
     statusEl.innerHTML = '<span class="spinner"></span>Processing…';
 
@@ -301,12 +333,14 @@ async function main() {
     const bnsProb = new Float64Array(N);
     const mgfProb = new Float64Array(N);
     const lmProb = new Float64Array(N);
+    const reliabilityScore = new Float64Array(N);
     for (let i = 0; i < N; i++) {
       const p = probabilityByName.get(names[i]);
       msProb[i] = p ? p.ms : Number.NaN;
       bnsProb[i] = p ? p.bns : Number.NaN;
       mgfProb[i] = p ? p.mgf : Number.NaN;
       lmProb[i] = p ? p.lm : Number.NaN;
+      reliabilityScore[i] = reliabilityByName.has(names[i]) ? reliabilityByName.get(names[i]) : Number.NaN;
     }
 
     // ---- Extract UMAP 3D columns regardless of saved shape ----
@@ -455,6 +489,23 @@ async function main() {
       bns:    { data: bnsProb, label: 'Neutron star merger probability',   header: 'colored by Neutron star merger probability', probScale: true },
       mgf:    { data: mgfProb, label: 'Magnetar giant flare probability',  header: 'colored by Magnetar giant flare probability', probScale: true },
       lm:     { data: lmProb,  label: 'Long merger probability',           header: 'colored by Long merger probability', probScale: true },
+      reliability: {
+        data: reliabilityScore,
+        label: '3D topology reliability',
+        header: 'colored by 3D topology reliability',
+        colorscale: [
+          [0.0, '#d73027'],
+          [0.333, '#d73027'],
+          [0.333, '#fee08b'],
+          [0.667, '#fee08b'],
+          [0.667, '#1a9850'],
+          [1.0, '#1a9850'],
+        ],
+        cmin: -1,
+        cmax: 1,
+        tickvals: [-1, 0, 1],
+        ticktext: ['Dubious', 'Uncertain', 'Reliable'],
+      },
     };
     const headerSub = document.getElementById('header-sub');
     document.getElementById('color-select').addEventListener('change', (ev) => {
@@ -465,16 +516,30 @@ async function main() {
           'marker.color': [Array.from(opt.data)],
           'marker.colorbar.title.text': opt.label,
         };
-        if (opt.probScale) {
+        if (opt.colorscale) {
+          update['marker.colorscale'] = opt.colorscale;
+          update['marker.reversescale'] = false;
+          update['marker.cmin'] = opt.cmin;
+          update['marker.cmax'] = opt.cmax;
+          update['marker.colorbar.tickmode'] = 'array';
+          update['marker.colorbar.tickvals'] = opt.tickvals;
+          update['marker.colorbar.ticktext'] = opt.ticktext;
+        } else if (opt.probScale) {
           update['marker.colorscale'] = 'Viridis';
           update['marker.reversescale'] = false;
           update['marker.cmin'] = 0;
           update['marker.cmax'] = 1;
+          update['marker.colorbar.tickmode'] = 'auto';
+          update['marker.colorbar.tickvals'] = null;
+          update['marker.colorbar.ticktext'] = null;
         } else {
           update['marker.colorscale'] = 'RdYlBu';
           update['marker.reversescale'] = true;
           update['marker.cmin'] = null;
           update['marker.cmax'] = null;
+          update['marker.colorbar.tickmode'] = 'auto';
+          update['marker.colorbar.tickvals'] = null;
+          update['marker.colorbar.ticktext'] = null;
         }
         Plotly.restyle('plot', update, [MAIN_IDX]);
         headerSub.innerHTML = opt.header;
