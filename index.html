@@ -434,6 +434,7 @@ async function main() {
         colorscale: 'Plasma',
         reversescale: false,
         ...finiteRange(epeak),
+        
       },
       flux64: {
         data: flux64,
@@ -441,7 +442,9 @@ async function main() {
         header: 'colored by log<sub>10</sub>(Flux<sub>64</sub>)',
         colorscale: 'Cividis',
         reversescale: false,
-        ...finiteRange(flux64),
+        // ...finiteRange(flux64),
+        cmin: 1.5,
+        cmax: 4,
       },
       ms: {
         data: msProb,
