@@ -547,6 +547,46 @@ async function main() {
       },
     };
 
+    function customDataForIndex(i) {
+      const epeakKev = loaded.epeak.data[i] >= 1 ? loaded.epeak.data[i] : Number.NaN;
+      return [
+        names[i],
+        Math.pow(10, t90[i]),
+        epeakKev,
+        loaded.fluence.data[i],
+        loaded.flux64.data[i],
+        loaded.flux1024.data[i],
+        msProb[i],
+        bnsProb[i],
+        mgfProb[i],
+        lmProb[i],
+        reliabilityScore[i],
+      ];
+    }
+
+    const hoverParameterLines =
+      'T90: %{customdata[1]:.3g} s<br>' +
+      'Epeak: %{customdata[2]:.3g} keV<br>' +
+      'Fluence: %{customdata[3]:.3e} erg/cm²<br>' +
+      'Flux64: %{customdata[4]:.3e} erg/cm²/s<br>' +
+      'Flux1024: %{customdata[5]:.3e} erg/cm²/s<br>' +
+      'P(MS): %{customdata[6]:.3f}<br>' +
+      'P(BNS): %{customdata[7]:.3f}<br>' +
+      'P(MGF): %{customdata[8]:.3f}<br>' +
+      'P(LM): %{customdata[9]:.3f}<br>' +
+      'Reliability: %{customdata[10]:.3g}';
+
+    const mainHoverTemplate =
+      '<b>%{text}</b><br>' +
+      hoverParameterLines +
+      '<extra></extra>';
+
+    const labeledHoverTemplate =
+      '<b>%{text}</b><br>' +
+      'Trigger: %{customdata[0]}<br>' +
+      hoverParameterLines +
+      '<extra></extra>';
+
     // =====================================================================
     //  Plotly traces
     // =====================================================================
@@ -555,10 +595,8 @@ async function main() {
       name: 'All GRBs',
       x: Array.from(ux), y: Array.from(uy), z: Array.from(uz),
       text: names,
-      hovertemplate:
-        '<b>%{text}</b><br>' +
-        'UMAP1: %{x:.2f}<br>UMAP2: %{y:.2f}<br>UMAP3: %{z:.2f}' +
-        '<extra></extra>',
+      customdata: names.map((_, i) => customDataForIndex(i)),
+      hovertemplate: mainHoverTemplate,
       marker: markerForColorOption(colorOptions.t90),
     };
 
@@ -572,9 +610,10 @@ async function main() {
         name: GRB_TAGS[i],
         x: [ux[idx]], y: [uy[idx]], z: [uz[idx]],
         text: [GRB_TAGS[i]],
+        customdata: [customDataForIndex(idx)],
         textposition: 'top center',
         textfont: { size: 11, color: '#ffffff' },
-        hovertemplate: '<b>' + GRB_TAGS[i] + '</b><br>' + GRB_LIST[i] + '<extra></extra>',
+        hovertemplate: labeledHoverTemplate,
         marker: {
           size: 10, color: GRB_COLOR[i], symbol: GRB_MARKER[i],
           line: { color: '#000', width: 1 },
@@ -583,16 +622,20 @@ async function main() {
     }
 
     function subsetTrace(ids, name, color, symbol, size) {
-      const xs = [], ys = [], zs = [], ts = [];
+      const xs = [], ys = [], zs = [], ts = [], custom = [];
       for (const id of ids) {
         const idx = nameIndex.get(id);
         if (idx === undefined) continue;
-        xs.push(ux[idx]); ys.push(uy[idx]); zs.push(uz[idx]); ts.push(id);
+        xs.push(ux[idx]);
+        ys.push(uy[idx]);
+        zs.push(uz[idx]);
+        ts.push(id);
+        custom.push(customDataForIndex(idx));
       }
       return {
         type: 'scatter3d', mode: 'markers',
-        name, x: xs, y: ys, z: zs, text: ts,
-        hovertemplate: '<b>%{text}</b><br>' + name + '<extra></extra>',
+        name, x: xs, y: ys, z: zs, text: ts, customdata: custom,
+        hovertemplate: mainHoverTemplate,
         marker: {
           size, color, symbol,
           line: { color: '#000', width: 1 },
@@ -606,10 +649,10 @@ async function main() {
     const searchTrace = {
       type: 'scatter3d', mode: 'markers+text',
       name: 'Selected',
-      x: [], y: [], z: [], text: [],
+      x: [], y: [], z: [], text: [], customdata: [],
       textposition: 'top center',
       textfont: { size: 12, color: '#ffeb3b' },
-      hovertemplate: '<b>%{text}</b><extra>selected</extra>',
+      hovertemplate: mainHoverTemplate,
       marker: {
         size: 14, color: 'rgba(255,235,59,0.15)',
         symbol: 'circle', line: { color: '#ffeb3b', width: 4 },
@@ -674,12 +717,18 @@ async function main() {
       _plotUpdateScheduled = true;
       requestAnimationFrame(() => {
         _plotUpdateScheduled = false;
-        const xs = [], ys = [], zs = [], ts = [];
+        const xs = [], ys = [], zs = [], ts = [], custom = [];
         selected.forEach(n => {
           const idx = nameIndex.get(n);
-          if (idx !== undefined) { xs.push(ux[idx]); ys.push(uy[idx]); zs.push(uz[idx]); ts.push(n); }
+          if (idx !== undefined) {
+            xs.push(ux[idx]);
+            ys.push(uy[idx]);
+            zs.push(uz[idx]);
+            ts.push(n);
+            custom.push(customDataForIndex(idx));
+          }
         });
-        Plotly.restyle('plot', { x: [xs], y: [ys], z: [zs], text: [ts] }, [SEARCH_IDX]);
+        Plotly.restyle('plot', { x: [xs], y: [ys], z: [zs], text: [ts], customdata: [custom] }, [SEARCH_IDX]);
       });
     }
 
