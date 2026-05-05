@@ -556,10 +556,10 @@ async function main() {
         loaded.fluence.data[i],
         loaded.flux64.data[i],
         loaded.flux1024.data[i],
-        msProb[i],
-        bnsProb[i],
-        mgfProb[i],
-        lmProb[i],
+        msProb[i] * 100,
+        bnsProb[i] * 100,
+        mgfProb[i] * 100,
+        lmProb[i] * 100,
         reliabilityScore[i],
       ];
     }
@@ -570,10 +570,10 @@ async function main() {
       'Fluence: %{customdata[3]:.3e} erg/cm²<br>' +
       'Flux64: %{customdata[4]:.3e} erg/cm²/s<br>' +
       'Flux1024: %{customdata[5]:.3e} erg/cm²/s<br>' +
-      'P(MS): %{customdata[6]:.3f}<br>' +
-      'P(BNS): %{customdata[7]:.3f}<br>' +
-      'P(MGF): %{customdata[8]:.3f}<br>' +
-      'P(LM): %{customdata[9]:.3f}<br>' +
+      'P(MS): %{customdata[6]:.1f}%<br>' +
+      'P(BNS): %{customdata[7]:.1f}%<br>' +
+      'P(MGF): %{customdata[8]:.1f}%<br>' +
+      'P(LM): %{customdata[9]:.1f}%<br>' +
       'Reliability: %{customdata[10]:.3g}';
 
     const mainHoverTemplate =
